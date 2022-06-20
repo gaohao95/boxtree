@@ -70,8 +70,8 @@ def _test_against_shared(
     set_cache_dir(rank)
 
     # Initialize arguments for worker processes
-    global_tree_dev = None
-    sources_weights = None
+    global_tree_host = None
+    sources_weights = np.empty(0, dtype=dtype)
     helmholtz_k = 0
 
     # Configure array context
@@ -106,6 +106,7 @@ def _test_against_shared(
 
         d_trav, _ = tg(actx.queue, global_tree_dev, debug=True)
         global_traversal_host = d_trav.get(queue=actx.queue)
+        global_tree_host = global_traversal_host.tree
 
         # Get pyfmmlib expansion wrangler
         wrangler = FMMLibExpansionWrangler(
@@ -129,7 +130,7 @@ def _test_against_shared(
 
     from boxtree.distributed import DistributedFMMRunner
     distribued_fmm_info = DistributedFMMRunner(
-        actx.queue, global_tree_dev, tg, wrangler_factory, comm=comm)
+        actx.queue, global_tree_host, tg, wrangler_factory, comm=comm)
 
     timing_data = {}
     pot_dfmm = distribued_fmm_info.drive_dfmm(
@@ -215,7 +216,7 @@ def _test_constantone(dims, nsources, ntargets, dtype):
 
     # Initialization
     tree = None
-    sources_weights = None
+    sources_weights = np.empty(0, dtype=dtype)
 
     # Configure array context
     actx = _acf()
@@ -239,6 +240,7 @@ def _test_constantone(dims, nsources, ntargets, dtype):
         tb = TreeBuilder(actx.context)
         tree, _ = tb(actx.queue, sources, targets=targets, max_particles_in_box=30,
                      debug=True)
+        tree = tree.get(actx.queue)
 
     tree_indep = ConstantOneTreeIndependentDataForWrangler()
 

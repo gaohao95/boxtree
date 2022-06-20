@@ -104,6 +104,8 @@ of :class:`boxtree.distributed.calculation.DistributedExpansionWrangler` in
 
 from mpi4py import MPI
 import numpy as np
+import pyopencl as cl
+import pyopencl.array
 from enum import IntEnum
 import warnings
 from boxtree.cost import FMMCostModel
@@ -138,13 +140,13 @@ class DistributedFMMRunner:
     .. automethod:: __init__
     .. automethod:: drive_dfmm
     """
-    def __init__(self, queue, global_tree_dev,
+    def __init__(self, queue, global_tree,
                  traversal_builder,
                  wrangler_factory,
                  calibration_params=None, comm=MPI.COMM_WORLD):
         """Distributes the global tree from the root rank to each worker rank.
 
-        :arg global_tree_dev: a :class:`boxtree.Tree` object in device memory.
+        :arg global_tree: a :class:`boxtree.Tree` object.
         :arg traversal_builder: an object which, when called, takes a
             :class:`pyopencl.CommandQueue` object and a :class:`boxtree.Tree` object,
             and generates a :class:`boxtree.traversal.FMMTraversalInfo` object from
@@ -160,16 +162,37 @@ class DistributedFMMRunner:
         self.comm = comm
         mpi_rank = comm.Get_rank()
 
+        tree_in_device_memory = None
+        if mpi_rank == 0:
+            tree_in_device_memory = isinstance(
+                global_tree.targets[0], cl.array.Array)
+        tree_in_device_memory = comm.bcast(tree_in_device_memory, root=0)
+
         # {{{ Broadcast global tree
 
-        global_tree = None
+        global_tree_host = None
         if mpi_rank == 0:
-            global_tree = global_tree_dev.get(queue)
-        global_tree = comm.bcast(global_tree, root=0)
-        global_tree_dev = global_tree.to_device(queue).with_queue(queue)
+            if tree_in_device_memory:
+                global_tree_host = global_tree.get(queue)
+            else:
+                global_tree_host = global_tree
+
+        global_tree_host = comm.bcast(global_tree_host, root=0)
+
+        global_tree_dev = None
+        if mpi_rank == 0 and tree_in_device_memory:
+            global_tree_dev = global_tree
+        else:
+            global_tree_dev = global_tree_host.to_device(queue)
+        global_tree_dev = global_tree_dev.with_queue(queue)
 
         global_trav_dev, _ = traversal_builder(queue, global_tree_dev)
-        global_trav = global_trav_dev.get(queue)
+        global_trav_host = global_trav_dev.get(queue)
+
+        if tree_in_device_memory:
+            global_trav = global_trav_dev
+        else:
+            global_trav = global_trav_host
 
         # }}}
 
@@ -198,7 +221,7 @@ class DistributedFMMRunner:
             ).get()
 
         from boxtree.distributed.partition import partition_work
-        responsible_boxes_list = partition_work(cost_per_box, global_trav, comm)
+        responsible_boxes_list = partition_work(cost_per_box, global_trav_host, comm)
 
         # }}}
 
@@ -206,7 +229,7 @@ class DistributedFMMRunner:
 
         from boxtree.distributed.local_tree import generate_local_tree
         self.local_tree, self.src_idx, self.tgt_idx = generate_local_tree(
-            queue, global_trav, responsible_boxes_list, comm)
+            queue, global_trav_host, responsible_boxes_list, comm)
 
         # }}}
 
@@ -220,11 +243,17 @@ class DistributedFMMRunner:
         # {{{ Compute traversal object on each rank
 
         from boxtree.distributed.local_traversal import generate_local_travs
-        local_trav = generate_local_travs(queue, self.local_tree, traversal_builder)
+        local_trav_dev = generate_local_travs(
+            queue, self.local_tree, traversal_builder)
+
+        if not tree_in_device_memory:
+            local_trav = local_trav_dev.get(queue=queue)
+        else:
+            local_trav = local_trav_dev.with_queue(queue)
 
         # }}}
 
-        self.wrangler = wrangler_factory(local_trav.get(None), global_trav)
+        self.wrangler = wrangler_factory(local_trav, global_trav)
 
     def drive_dfmm(self, source_weights, timing_data=None):
         """Calculate potentials at target points.
