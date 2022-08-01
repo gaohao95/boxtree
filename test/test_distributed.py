@@ -189,7 +189,7 @@ def _test_constantone(dims, nsources, ntargets, dtype):
         def __init__(
                 self, queue, comm, tree_indep, local_traversal, global_traversal):
             DistributedExpansionWrangler.__init__(
-                self, queue, comm, global_traversal,
+                self, queue, comm, global_traversal, False,
                 communicate_mpoles_via_allreduce=True)
             ConstantOneExpansionWranglerBase.__init__(
                 self, tree_indep, local_traversal)

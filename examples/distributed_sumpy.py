@@ -42,7 +42,7 @@ def main():
         return DistributedSumpyExpansionWrangler(
             ctx, comm, tree_indep, local_traversal, global_traversal, dtype,
             fmm_level_to_order,
-            communicate_mpoles_via_allreduce=True)
+            communicate_mpoles_via_allreduce=False)
 
     global_tree_dev = None
     sources_weights = cl.array.empty(queue, 0, dtype=dtype)

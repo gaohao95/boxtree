@@ -146,7 +146,9 @@ class DistributedFMMRunner:
                  calibration_params=None, comm=MPI.COMM_WORLD):
         """Distributes the global tree from the root rank to each worker rank.
 
-        :arg global_tree: a :class:`boxtree.Tree` object.
+        :arg global_tree: a :class:`boxtree.Tree` object. This tree could live in the
+            host or the device memory, depending on the wrangler. This argument is
+            only significant on the root rank.
         :arg traversal_builder: an object which, when called, takes a
             :class:`pyopencl.CommandQueue` object and a :class:`boxtree.Tree` object,
             and generates a :class:`boxtree.traversal.FMMTraversalInfo` object from
