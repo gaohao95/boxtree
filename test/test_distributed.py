@@ -23,7 +23,6 @@ THE SOFTWARE.
 import os
 import sys
 import pytest
-from functools import partial
 
 from arraycontext import pytest_generate_tests_for_array_contexts
 from boxtree.array_context import (                                 # noqa: F401
@@ -180,131 +179,6 @@ def test_against_shared(
 # }}}
 
 
-# {{{ test_against_shared_sumpy
-
-def _test_against_shared_sumpy(
-        dims, nsources, ntargets, dtype, communicate_mpoles_via_allreduce=False):
-    from mpi4py import MPI
-
-    # Get the current rank
-    comm = MPI.COMM_WORLD
-    mpi_rank = comm.Get_rank()
-    set_cache_dir(mpi_rank)
-
-    # Configure array context
-    actx = _acf()
-
-    def fmm_level_to_order(base_kernel, kernel_arg_set, tree, level):
-        return max(level, 3)
-
-    from boxtree.traversal import FMMTraversalBuilder
-    traversal_builder = FMMTraversalBuilder(actx.context, well_sep_is_n_away=2)
-
-    from sumpy.kernel import LaplaceKernel
-    from sumpy.expansion import DefaultExpansionFactory
-    kernel = LaplaceKernel(dims)
-    expansion_factory = DefaultExpansionFactory()
-    local_expansion_factory = expansion_factory.get_local_expansion_class(kernel)
-    local_expansion_factory = partial(local_expansion_factory, kernel)
-    multipole_expansion_factory = \
-        expansion_factory.get_multipole_expansion_class(kernel)
-    multipole_expansion_factory = partial(multipole_expansion_factory, kernel)
-
-    from sumpy.fmm import SumpyTreeIndependentDataForWrangler
-    tree_indep = SumpyTreeIndependentDataForWrangler(
-        actx.context, multipole_expansion_factory, local_expansion_factory, [kernel])
-
-    global_tree_dev = None
-    sources_weights = actx.empty(0, dtype=dtype)
-
-    if mpi_rank == 0:
-        # Generate random particles and source weights
-        from boxtree.tools import make_normal_particle_array as p_normal
-        sources = p_normal(actx.queue, nsources, dims, dtype, seed=15)
-        targets = p_normal(actx.queue, ntargets, dims, dtype, seed=18)
-
-        # FIXME: Use arraycontext instead of raw PyOpenCL arrays
-        from pyopencl.clrandom import PhiloxGenerator
-        rng = PhiloxGenerator(actx.context, seed=20)
-        sources_weights = rng.uniform(actx.queue, nsources, dtype=np.float64)
-
-        rng = PhiloxGenerator(actx.context, seed=22)
-        target_radii = rng.uniform(
-            actx.queue, ntargets, a=0, b=0.05, dtype=np.float64)
-
-        # Build the tree and interaction lists
-        from boxtree import TreeBuilder
-        tb = TreeBuilder(actx.context)
-        global_tree_dev, _ = tb(
-            actx.queue, sources, targets=targets, target_radii=target_radii,
-            stick_out_factor=0.25, max_particles_in_box=30, debug=True)
-
-        global_trav_dev, _ = traversal_builder(
-            actx.queue, global_tree_dev, debug=True)
-
-        from sumpy.fmm import SumpyExpansionWrangler
-        wrangler = SumpyExpansionWrangler(tree_indep, global_trav_dev, dtype,
-                                          fmm_level_to_order)
-
-        # Compute FMM with one MPI rank
-        from boxtree.fmm import drive_fmm
-        shmem_potential = drive_fmm(wrangler, [sources_weights])
-
-    # Compute FMM using the distributed implementation
-
-    def wrangler_factory(local_traversal, global_traversal):
-        from boxtree.distributed.calculation import DistributedSumpyExpansionWrangler
-        return DistributedSumpyExpansionWrangler(
-            actx.context, comm, tree_indep, local_traversal, global_traversal, dtype,
-            fmm_level_to_order,
-            communicate_mpoles_via_allreduce=communicate_mpoles_via_allreduce)
-
-    from boxtree.distributed import DistributedFMMRunner
-    distribued_fmm_info = DistributedFMMRunner(
-        actx.queue, global_tree_dev, traversal_builder, wrangler_factory, comm=comm)
-
-    timing_data = {}
-    distributed_potential = distribued_fmm_info.drive_dfmm(
-                [sources_weights], timing_data=timing_data)
-    assert timing_data
-
-    if mpi_rank == 0:
-        assert(shmem_potential.shape == (1,))
-        assert(distributed_potential.shape == (1,))
-
-        shmem_potential = shmem_potential[0].get()
-        distributed_potential = distributed_potential[0].get()
-
-        error = (np.linalg.norm(distributed_potential - shmem_potential, ord=np.inf)
-                 / np.linalg.norm(shmem_potential, ord=np.inf))
-        print(error)
-        assert error < 1e-14
-
-
-@pytest.mark.mpi
-@pytest.mark.parametrize(
-    "num_processes, dims, nsources, ntargets, communicate_mpoles_via_allreduce", [
-        (4, 3, 10000, 10000, True),
-        (4, 3, 10000, 10000, False)
-    ]
-)
-def test_against_shared_sumpy(
-        num_processes, dims, nsources, ntargets, communicate_mpoles_via_allreduce):
-    pytest.importorskip("mpi4py")
-
-    from boxtree.tools import run_mpi
-    run_mpi(__file__, num_processes, {
-        "PYTEST": "shared_sumpy",
-        "dims": dims,
-        "nsources": nsources,
-        "ntargets": ntargets,
-        "OMP_NUM_THREADS": 1,
-        "communicate_mpoles_via_allreduce": communicate_mpoles_via_allreduce
-        })
-
-# }}}
-
-
 # {{{ test_constantone
 
 def _test_constantone(dims, nsources, ntargets, dtype):
@@ -417,10 +291,6 @@ if __name__ == "__main__":
 
         if os.environ["PYTEST"] == "shared":
             _test_against_shared(
-                dims, nsources, ntargets, dtype,
-                communicate_mpoles_via_allreduce=communicate_mpoles_via_allreduce)
-        elif os.environ["PYTEST"] == "shared_sumpy":
-            _test_against_shared_sumpy(
                 dims, nsources, ntargets, dtype,
                 communicate_mpoles_via_allreduce=communicate_mpoles_via_allreduce)
         elif os.environ["PYTEST"] == "constantone":
