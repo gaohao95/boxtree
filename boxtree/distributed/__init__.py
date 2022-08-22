@@ -251,7 +251,7 @@ class DistributedFMMRunner:
         if not tree_in_device_memory:
             local_trav = local_trav_dev.get(queue=queue)
         else:
-            local_trav = local_trav_dev.with_queue(queue)
+            local_trav = local_trav_dev.with_queue(None)
 
         # }}}
 
